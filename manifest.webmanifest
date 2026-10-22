@@ -1,0 +1,13 @@
+{
+  "name": "La Chiru Jeans · Gestión comercial",
+  "short_name": "La Chiru",
+  "lang": "es-AR",
+  "start_url": "./index.html",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#FFF5F7",
+  "theme_color": "#8B3F56",
+  "icons": [
+    { "src": "assets/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" }
+  ]
+}
