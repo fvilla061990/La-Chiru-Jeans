@@ -12,7 +12,7 @@ LC.api = (function () {
       j = JSON.parse(await r.text());
     } catch (x) { const e = new Error('No se pudo conectar con el servidor. Revisá tu conexión.'); e.codigo = 'RED'; throw e; }
     if (!j.ok) {
-      const e = new Error(MSG[j.codigo] || 'Error del servidor.'); e.codigo = j.codigo;
+      const e = new Error(j.mensaje || MSG[j.codigo] || 'Error del servidor.'); e.codigo = j.codigo;
       if (['TOKEN_VENCIDO', 'TOKEN_INVALIDO', 'NO_AUTORIZADO'].includes(j.codigo)) { token = null; onExpire(e.message); }
       throw e;
     }
