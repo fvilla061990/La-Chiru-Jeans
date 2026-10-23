@@ -3,7 +3,7 @@ LC.api = (function () {
   let token = null, onExpire = () => {};
   const MSG = { NO_AUTORIZADO: 'Tu cuenta de Google no está autorizada.', TOKEN_VENCIDO: 'La sesión venció. Ingresá de nuevo.', TOKEN_INVALIDO: 'Sesión inválida. Ingresá de nuevo.',
     TOKEN_OTRA_APP: 'Configuración de acceso incorrecta (ID de cliente).', CONFIG_FALTANTE: 'Falta configurar el backend.', SIN_TOKEN: 'Ingresá con Google.',
-    DATOS_INVALIDOS: 'Datos inválidos.', ACCION_DESCONOCIDA: 'Acción no disponible en el servidor.', ERROR_INTERNO: 'Error interno del servidor.' };
+    DATOS_INVALIDOS: 'Datos inválidos.', ACCION_DESCONOCIDA: 'El servidor está desactualizado: publicá una nueva versión de Apps Script (ver README).', ERROR_INTERNO: 'Error interno del servidor.' };
   async function call(accion, datos = {}) {
     if (!token) { const e = new Error(MSG.SIN_TOKEN); e.codigo = 'SIN_TOKEN'; throw e; }
     let j;
