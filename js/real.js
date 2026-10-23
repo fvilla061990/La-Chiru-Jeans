@@ -15,10 +15,34 @@
   const tbl = (cols, rows) => !rows.length ? '<div class="empty">No hay registros para los filtros elegidos.</div>' :
     `<div class="table-wrap"><table><thead><tr>${cols.map(c => `<th class="${c.num ? 'num' : ''}">${esc(c.l)}</th>`).join('')}</tr></thead><tbody>${rows.map(r => `<tr>${cols.map(c => `<td class="${c.num ? 'num' : ''}">${c.html ? r[c.k] : esc(r[c.k])}</td>`).join('')}</tr>`).join('')}</tbody></table></div>`;
   const acc = id => `<button class="btn ghost sm" data-edit="${esc(id)}">Editar</button> <button class="btn ghost sm" data-off="${esc(id)}">Inactivar</button>`;
-  async function enviar(btn, accion, datos, m, done) {
+  async function enviar(btn, accion, datos, m, done, onErr) {
     btn.disabled = true;
-    try { await api(accion, datos); CAT = null; m.close(); okMsg('Guardado correctamente.'); done(); }
-    catch (e) { fail(e); btn.disabled = false; }
+    try { const r = await api(accion, datos); CAT = null; m.close(); okMsg(r.duplicado ? 'Esa operación ya estaba registrada: no se duplicó.' : 'Guardado correctamente.'); done(); }
+    catch (e) { if (!(onErr && onErr(e))) fail(e); btn.disabled = false; }
+  }
+  function validarArticulo(d, nuevo, teniaProv) {
+    if (nuevo && !String(d.categoria || '').trim()) return 'La categoría es obligatoria.';
+    if (nuevo && !String(d.subcategoria || '').trim()) return 'La subcategoría es obligatoria.';
+    if (!String(d.talle || '').trim()) return 'El talle es obligatorio.';
+    if ((nuevo || teniaProv) && !d.proveedor_id) return 'Seleccioná un proveedor: es obligatorio.';
+    if (d.precio_venta !== '' && !(Number(d.precio_venta) >= 0)) return 'El precio de venta no es válido.';
+    return null;
+  }
+  function validarRecepcion(d) {
+    if (!d.fecha) return 'Indicá la fecha.';
+    if (d.fecha > today()) return 'La fecha no puede ser futura.';
+    if (!d.proveedor_id) return 'Seleccioná el proveedor.';
+    if (!d.lineas.length) return 'Agregá al menos un artículo.';
+    const vistos = {};
+    for (let i = 0; i < d.lineas.length; i++) {
+      const l = d.lineas[i], n = 'Línea ' + (i + 1) + ': ';
+      if (!l.articulo_id) return n + 'elegí el artículo.';
+      if (vistos[l.articulo_id]) return n + 'el artículo está repetido.';
+      vistos[l.articulo_id] = true;
+      if (l.cantidad === '' || !Number.isInteger(Number(l.cantidad)) || Number(l.cantidad) < 1) return n + 'la cantidad debe ser un entero mayor que 0.';
+      if (l.costo_unitario === '' || !(Number(l.costo_unitario) > 0)) return n + 'el costo unitario debe ser mayor que 0.';
+    }
+    return null;
   }
   function confirmar(texto, label, fn) {
     const m = modal({ title: 'Confirmar', body: `<p>${esc(texto)}</p>`, footer: `<button class="btn ghost" data-close>Cancelar</button><button class="btn primary" id="cf">${esc(label)}</button>` });
@@ -32,16 +56,20 @@
     const m = modal({ title: nuevo ? 'Nuevo artículo' : 'Editar artículo', footer: foot, body: `<div class="form-grid">
       ${nuevo ? fld('a-cat', 'Categoría', { req: 1, list: 'dl-cat', max: 60 }) + fld('a-sub', 'Subcategoría', { req: 1, list: 'dl-sub', max: 60 }) : fld('a-cat', 'Categoría', { value: a.categoria, dis: 1 }) + fld('a-sub', 'Subcategoría', { value: a.subcategoria, dis: 1 })}
       ${fld('a-det', 'Detalle (opcional)', { value: a && a.detalle, max: 80 })}${fld('a-talle', 'Talle', { req: 1, value: a && a.talle, max: 10 })}
-      ${sel('a-prov', 'Proveedor', opts(c.proveedores, 'id', 'razon_social', a && a.proveedor_id), 'Sin proveedor')}${fld('a-pv', 'Precio de venta (ARS)', { type: 'number', step: '0.01', value: a ? a.precio_venta : '' })}</div>
+      ${sel('a-prov', 'Proveedor *', opts(c.proveedores, 'id', 'razon_social', a && a.proveedor_id) + (a && a.proveedor_id && !c.proveedores.some(p => p.id === a.proveedor_id) ? `<option value="${esc(a.proveedor_id)}" selected>${esc(a.proveedor)} (inactivo)</option>` : ''), 'Seleccionar…')}${fld('a-pv', 'Precio de venta (ARS)', { type: 'number', step: '0.01', value: a ? a.precio_venta : '' })}</div>
       <datalist id="dl-cat">${c.categorias.map(x => `<option value="${esc(x.nombre)}">`).join('')}</datalist><datalist id="dl-sub">${c.subcategorias.map(x => `<option value="${esc(x.nombre)}">`).join('')}</datalist>
-      <div class="note">${nuevo ? 'Si la categoría o subcategoría no existe, se crea. El stock inicial es 0: se carga con una recepción de mercadería (entrega 2C).' : 'Categoría y subcategoría no se pueden cambiar. Los precios históricos de compras y ventas no se modifican.'}</div>` });
-    m.el.querySelector('#sv').onclick = e => enviar(e.target, 'articulo_guardar', { id: a && a.id, categoria: v(m.el, 'a-cat'), subcategoria: v(m.el, 'a-sub'), detalle: v(m.el, 'a-det'), talle: v(m.el, 'a-talle'), proveedor_id: v(m.el, 'a-prov'), precio_venta: v(m.el, 'a-pv') }, m, done);
+      <div class="note">${nuevo ? 'Si la categoría o subcategoría no existe, se crea. El stock inicial es 0: se carga con una recepción de mercadería.' : 'Categoría y subcategoría no se pueden cambiar. Los precios históricos de compras y ventas no se modifican.'}</div>` });
+    m.el.querySelector('#sv').onclick = e => {
+      const d = { id: a && a.id, categoria: v(m.el, 'a-cat'), subcategoria: v(m.el, 'a-sub'), detalle: v(m.el, 'a-det'), talle: v(m.el, 'a-talle'), proveedor_id: v(m.el, 'a-prov'), precio_venta: v(m.el, 'a-pv') };
+      const msg = validarArticulo(d, nuevo, !!(a && a.proveedor_id)); if (msg) return fail({ message: msg });
+      enviar(e.target, 'articulo_guardar', d, m, done);
+    };
   }
   LC.views.articulos = async function (root) {
     let c; try { c = await catalogo(true); } catch (e) { root.innerHTML = `<div class="empty">${esc(e.message)}</div>`; return; }
     const subs = cid => opts(c.subcategorias.filter(s => !cid || s.categoria_id === cid), 'id', 'nombre');
     root.innerHTML = `<div class="filters">${sel('f-cat', 'Categoría', opts(c.categorias, 'id', 'nombre'))}${sel('f-sub', 'Subcategoría', subs(''))}${sel('f-sup', 'Proveedor', opts(c.proveedores, 'id', 'razon_social'))}
-      <div class="actions"><button class="btn primary" id="newArt">${icon('plus', 18)}Nuevo artículo</button><button class="btn ghost" disabled title="Disponible en la entrega 2C">Cargar mercadería</button></div></div><div id="out">${loading()}</div>`;
+      <div class="actions"><button class="btn primary" id="newArt">${icon('plus', 18)}Nuevo artículo</button><button class="btn ghost" id="newRec">Cargar mercadería</button></div></div><div id="out">${loading()}</div>`;
     let rows = [];
     const load = async () => {
       try {
@@ -55,6 +83,7 @@
     root.querySelector('#f-cat').onchange = () => { root.querySelector('#f-sub').innerHTML = '<option value="">Todas</option>' + subs(v(root, 'f-cat')); load(); };
     root.querySelector('#f-sub').onchange = root.querySelector('#f-sup').onchange = load;
     root.querySelector('#newArt').onclick = () => artForm(null, async () => { await catalogo(true); load(); });
+    root.querySelector('#newRec').onclick = () => recForm(load);
     root.addEventListener('click', e => {
       const ed = e.target.closest('[data-edit]'), off = e.target.closest('[data-off]');
       if (ed) artForm(rows.find(a => a.id === ed.dataset.edit), load);
@@ -70,28 +99,94 @@
       <h3 class="mt">Categorías que comercializa</h3><div class="chips">${c.categorias.map(x => `<label class="chip"><input type="checkbox" data-cat="${esc(x.nombre)}"${p && p.categorias.includes(x.nombre) ? ' checked' : ''}> ${esc(x.nombre)}</label>`).join('')}</div>${fld('p-newcat', 'Agregar categoría nueva (opcional)', { max: 60 })}` });
     m.el.querySelector('#sv').onclick = e => {
       const cats = [...m.el.querySelectorAll('[data-cat]:checked')].map(i => i.dataset.cat), nc = v(m.el, 'p-newcat').trim(); if (nc) cats.push(nc);
-      enviar(e.target, 'proveedor_guardar', { id: p && p.id, fecha_alta: v(m.el, 'p-date'), razon_social: v(m.el, 'p-rs'), nombre: v(m.el, 'p-n'), apellido: v(m.el, 'p-a'), email: v(m.el, 'p-m'), celular: v(m.el, 'p-c'), categorias: cats }, m, done);
+      enviar(e.target, 'proveedor_guardar', { id: p && p.id, fecha_alta: v(m.el, 'p-date'), razon_social: v(m.el, 'p-rs'), nombre: v(m.el, 'p-n'), apellido: v(m.el, 'p-a'), email: v(m.el, 'p-m'), celular: v(m.el, 'p-c'), categorias: cats }, m, done, x => {
+        if (x.codigo !== 'PROVEEDOR_INACTIVO') return false;
+        m.close(); confirmar(x.message + ' ¿Querés recuperarlo en lugar de crear uno nuevo?', 'Recuperar proveedor', async () => { await api('proveedor_reactivar', { id: x.datos.proveedor_id }); CAT = null; done(); });
+        return true;
+      });
     };
   }
   LC.views.proveedores = async function (root) {
     let c; try { c = await catalogo(true); } catch (e) { root.innerHTML = `<div class="empty">${esc(e.message)}</div>`; return; }
-    root.innerHTML = `<div class="filters">${fld('f-from', 'Desde', { type: 'date', value: daysAgo(89) })}${fld('f-to', 'Hasta', { type: 'date', value: today() })}${sel('f-sup', 'Proveedor', opts(c.proveedores, 'id', 'razon_social'))}${sel('f-cat', 'Categoría de producto', opts(c.categorias, 'nombre', 'nombre'))}
+    root.innerHTML = `<div class="filters">${fld('f-from', 'Desde', { type: 'date', value: daysAgo(89) })}${fld('f-to', 'Hasta', { type: 'date', value: today() })}${sel('f-sup', 'Proveedor', opts(c.proveedores, 'id', 'razon_social'))}${sel('f-cat', 'Categoría de producto', opts(c.categorias, 'nombre', 'nombre'))}<label class="field"><span>Mostrar</span><select id="f-est"><option value="activos">Activos</option><option value="inactivos">Inactivos</option></select></label>
       <div class="actions"><button class="btn primary" id="newSup">${icon('plus', 18)}Nuevo proveedor</button></div></div><div id="out">${loading()}</div>`;
     let all = [];
     const load = async () => {
       try {
-        all = (await api('proveedor_listar', { desde: v(root, 'f-from'), hasta: v(root, 'f-to') })).proveedores;
+        const r = await api('proveedor_listar', { desde: v(root, 'f-from'), hasta: v(root, 'f-to'), estado: v(root, 'f-est') || 'activos' }); all = r.proveedores; const inact = v(root, 'f-est') === 'inactivos';
         const f = all.filter(s => (!v(root, 'f-sup') || s.id === v(root, 'f-sup')) && (!v(root, 'f-cat') || s.categorias.includes(v(root, 'f-cat'))));
-        $('#out', root).innerHTML = `<div class="kpis one">${kpi('Proveedores activos', fmtNum(all.length), 'No cambia con el filtro de fechas')}</div><div class="card flush">${tbl([{ k: 'razon_social', l: 'Razón social' }, { k: 'cats', l: 'Categorías' }, { k: 'unidades', l: 'Unidades compradas', num: 1 }, { k: 'amt', l: 'Importe comprado', num: 1 }, { k: 'acc', l: '', html: 1 }], f.map(s => ({ ...s, cats: s.categorias.join(', '), amt: fmtARS(s.importe), acc: acc(s.id) })))}</div>`;
+        $('#out', root).innerHTML = `<div class="kpis one">${kpi('Proveedores activos', fmtNum(r.total_activos), 'Inactivos: ' + fmtNum(r.total_inactivos))}</div><div class="card flush">${tbl([{ k: 'razon_social', l: 'Razón social' }, { k: 'cats', l: 'Categorías' }, { k: 'unidades', l: 'Unidades compradas', num: 1 }, { k: 'amt', l: 'Importe comprado', num: 1 }, { k: 'acc', l: '', html: 1 }], f.map(s => ({ ...s, cats: s.categorias.join(', '), amt: fmtARS(s.importe), acc: inact ? `<button class="btn ghost sm" data-react="${esc(s.id)}">Reactivar</button>` : acc(s.id) })))}</div>`;
       } catch (e) { $('#out', root).innerHTML = `<div class="empty">${esc(e.message)}</div>`; }
     };
     root.querySelectorAll('.filters select, .filters input').forEach(i => i.addEventListener('change', load));
     root.querySelector('#newSup').onclick = () => supForm(null, async () => { await catalogo(true); load(); });
     root.addEventListener('click', e => {
       const ed = e.target.closest('[data-edit]'), off = e.target.closest('[data-off]');
+      const re = e.target.closest('[data-react]');
+      if (re) { const s = all.find(x => x.id === re.dataset.react); confirmar(`¿Reactivar a "${s.razon_social}"? Vuelve a la lista de activos con su mismo historial.`, 'Reactivar', async () => { await api('proveedor_reactivar', { id: s.id }); CAT = null; load(); }); }
       if (ed) supForm(all.find(s => s.id === ed.dataset.edit), load);
       if (off) { const s = all.find(x => x.id === off.dataset.off); confirmar(`¿Inactivar a "${s.razon_social}"? Su historial de compras se conserva.`, 'Inactivar', async () => { await api('proveedor_inactivar', { id: s.id }); load(); }); }
     });
     load();
   };
+
+  /* ---------- Recepción de mercadería (2C) ---------- */
+  const lbl = a => `${a.categoria} ${a.subcategoria}${a.detalle ? ' ' + a.detalle : ''} · T${a.talle}`;
+  async function recForm(done) {
+    let arts; try { arts = (await api('articulo_listar', {})).articulos; await catalogo(true); } catch (e) { return fail(e); }
+    const c = CAT, rid = crypto.randomUUID();
+    const linea = () => `<tr class="ln"><td><select class="l-art"><option value="">Seleccionar…</option>${arts.map(a => `<option value="${esc(a.id)}">${esc(lbl(a))}</option>`).join('')}</select></td><td><input class="l-qty" type="number" min="1" step="1" inputmode="numeric"></td><td><input class="l-cost" type="number" min="0" step="0.01" inputmode="decimal"></td><td class="num l-imp">—</td><td><button class="btn ghost sm l-del" type="button">Quitar</button></td></tr>`;
+    const m = modal({ title: 'Recepción de mercadería', footer: foot, body: `<div class="form-grid">${fld('r-date', 'Fecha', { type: 'date', value: today(), req: 1 })}${sel('r-prov', 'Proveedor *', opts(c.proveedores, 'id', 'razon_social'), 'Seleccionar…')}</div>
+      <div class="table-wrap"><table><thead><tr><th>Artículo *</th><th>Cantidad *</th><th>Costo unit. (ARS) *</th><th class="num">Importe</th><th></th></tr></thead><tbody id="r-lines">${linea()}</tbody></table></div>
+      <p><button class="btn ghost" id="r-add" type="button">${icon('plus', 18)}Agregar artículo</button></p>
+      <div class="note">Total: <b id="r-total">${fmtARS(0)}</b>. El stock se actualiza con movimientos registrados al confirmar. Si falla, podés reintentar sin duplicar.</div>` });
+    const body = m.el, tb = body.querySelector('#r-lines');
+    const leer = () => [...tb.querySelectorAll('.ln')].map(tr => ({ tr, articulo_id: tr.querySelector('.l-art').value, cantidad: tr.querySelector('.l-qty').value, costo_unitario: tr.querySelector('.l-cost').value }));
+    const calc = () => { let t = 0; leer().forEach(l => { const i = Number(l.cantidad) * Number(l.costo_unitario); l.tr.querySelector('.l-imp').textContent = i > 0 ? fmtARS(i) : '—'; if (i > 0) t += i; }); body.querySelector('#r-total').textContent = fmtARS(t); };
+    body.addEventListener('input', calc); body.addEventListener('change', calc);
+    body.querySelector('#r-add').onclick = () => tb.insertAdjacentHTML('beforeend', linea());
+    body.addEventListener('click', e => { const d = e.target.closest('.l-del'); if (d && tb.querySelectorAll('.ln').length > 1) { d.closest('.ln').remove(); calc(); } });
+    body.querySelector('#sv').onclick = e => {
+      const datos = { request_id: rid, fecha: v(body, 'r-date'), proveedor_id: v(body, 'r-prov'), lineas: leer().map(l => ({ articulo_id: l.articulo_id, cantidad: l.cantidad, costo_unitario: l.costo_unitario })) };
+      const msg = validarRecepcion(datos); if (msg) return fail({ message: msg });
+      enviar(e.target, 'compra_registrar', datos, m, done);
+    };
+  }
+  async function recDetalle(id) {
+    try {
+      const r = await api('compra_detalle', { id }), c = r.compra;
+      modal({ title: `Recepción ${c.id}`, footer: '<button class="btn ghost" data-close>Cerrar</button>', body: `<dl><dt>Fecha</dt><dd>${esc(c.fecha)}</dd><dt>Proveedor</dt><dd>${esc(c.proveedor)}</dd><dt>Estado</dt><dd>${esc(c.estado)}</dd><dt>Registró</dt><dd>${esc(c.usuario)}</dd><dt>Movimientos de stock</dt><dd>${r.movimientos}</dd></dl>`
+        + tbl([{ k: 'articulo', l: 'Artículo' }, { k: 'cantidad', l: 'Cantidad', num: 1 }, { k: 'cu', l: 'Costo unit.', num: 1 }, { k: 'imp', l: 'Importe', num: 1 }], r.lineas.map(l => ({ ...l, cu: fmtARS(l.costo_unitario), imp: fmtARS(l.importe) }))) + `<p class="note">Total: <b>${fmtARS(c.total)}</b></p>` });
+    } catch (e) { fail(e); }
+  }
+  async function recView(root) {
+    let c; try { c = await catalogo(true); } catch (e) { root.innerHTML = `<div class="empty">${esc(e.message)}</div>`; return; }
+    root.innerHTML = `<div class="filters">${fld('f-from', 'Desde', { type: 'date', value: daysAgo(29) })}${fld('f-to', 'Hasta', { type: 'date', value: today() })}${sel('f-sup', 'Proveedor', opts(c.proveedores, 'id', 'razon_social'))}<div class="actions"><button class="btn primary" id="newRec2">${icon('plus', 18)}Nueva recepción</button></div></div><div id="out">${loading()}</div>`;
+    const load = async () => {
+      try {
+        const rows = (await api('compra_listar', { desde: v(root, 'f-from'), hasta: v(root, 'f-to'), proveedor_id: v(root, 'f-sup') })).compras;
+        $('#out', root).innerHTML = `<div class="kpis one">${kpi('Recepciones confirmadas', fmtNum(rows.filter(r => r.estado === 'CONFIRMADA').length), 'En el período')}</div><div class="card flush">${tbl([{ k: 'fecha', l: 'Fecha' }, { k: 'id', l: 'N°' }, { k: 'proveedor', l: 'Proveedor' }, { k: 'unidades', l: 'Unidades', num: 1 }, { k: 'tot', l: 'Total', num: 1 }, { k: 'est', l: 'Estado', html: 1 }, { k: 'acc', l: '', html: 1 }],
+          rows.map(r => ({ ...r, tot: fmtARS(r.total), est: r.estado === 'CONFIRMADA' ? 'Confirmada' : `<span class="badge">${r.estado === 'PENDIENTE' ? 'Incompleta' : 'Descartada'}</span>`, acc: `<button class="btn ghost sm" data-ver="${esc(r.id)}">Ver detalle</button>` + (r.estado === 'PENDIENTE' ? ` <button class="btn ghost sm" data-recup="${esc(r.id)}">Recuperar</button>` : '') })))}</div>`;
+      } catch (e) { $('#out', root).innerHTML = `<div class="empty">${esc(e.message)}</div>`; }
+    };
+    root.querySelectorAll('.filters select, .filters input').forEach(i => i.addEventListener('change', load));
+    root.querySelector('#newRec2').onclick = () => recForm(load);
+    root.addEventListener('click', e => {
+      const ver = e.target.closest('[data-ver]'), rc = e.target.closest('[data-recup]');
+      if (ver) recDetalle(ver.dataset.ver);
+      if (rc) confirmar('Esta recepción quedó incompleta. Se completará con lo ya registrado (o se descartará si no tiene detalle). ¿Continuar?', 'Recuperar', async () => { await api('compra_recuperar', { compra_id: rc.dataset.recup }); load(); });
+    });
+    load();
+  }
+  const artView = LC.views.articulos;
+  LC.views.articulos = async function (root) {
+    root.innerHTML = '<div class="actions"><button class="btn primary" data-tab="art">Artículos</button><button class="btn ghost" data-tab="rec">Recepciones</button></div><div id="tabbody"></div>';
+    const show = async t => {
+      root.querySelectorAll('[data-tab]').forEach(b => { b.className = 'btn ' + (b.dataset.tab === t ? 'primary' : 'ghost'); });
+      const b = document.createElement('div'); root.querySelector('#tabbody').replaceChildren(b); await (t === 'art' ? artView : recView)(b);
+    };
+    root.querySelector('.actions').addEventListener('click', e => { const t = e.target.closest('[data-tab]'); if (t) show(t.dataset.tab); });
+    show('art');
+  };
+  LC.real = { validarArticulo, validarRecepcion };
 })();
