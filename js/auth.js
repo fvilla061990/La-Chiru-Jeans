@@ -13,10 +13,13 @@ LC.auth = (function () {
     try {
       const p = await LC.api.call('ping');
       const box = document.createElement('span'); box.id = 'userBox'; box.className = 'note';
-      box.innerHTML = `${esc(p.email)} <button class="btn" id="logoutBtn">Salir</button>`;
+      const viejo = !!LC.expectedBackend && p.version !== LC.expectedBackend;
+      box.innerHTML = `${esc(p.email)}${viejo ? ' <b style="color:#b3261e">⚠ Servidor desactualizado</b>' : ''} <button class="btn" id="logoutBtn">Salir</button>`;
+      if (viejo) toast(`El servidor (Apps Script) tiene la versión ${p.version || 'anterior'} y la aplicación necesita la ${LC.expectedBackend}. Publicá una nueva versión de Apps Script (ver README).`, 'error');
       $('.topbar').appendChild(box);
       $('#logoutBtn').onclick = () => { LC.api.setToken(null); window.google.accounts.id.disableAutoSelect(); showLogin(); };
       onReady();
+      if (!viejo && LC.real && LC.real.prefetch) LC.real.prefetch();
     } catch (e) { LC.api.setToken(null); showLogin(e.message); }
   }
   function start(ready) {

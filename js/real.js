@@ -3,11 +3,21 @@
   if (!LC.config.apiUrl) return;
   const { esc, fmtARS, fmtNum, $, kpi, icon, modal, toast, loading } = LC.ui;
   const { today, daysAgo } = LC.util;
-  const api = (a, d) => LC.api.call(a, d);
+  const CACHE = {}, TTL = 45000, LECT = { catalogo: 1, articulo_listar: 1, proveedor_listar: 1, compra_listar: 1 };
+  const limpiar = () => Object.keys(CACHE).forEach(k => delete CACHE[k]);
+  function poner(k, p) { CACHE[k] = { t: Date.now(), p }; p.catch(() => { if (CACHE[k] && CACHE[k].p === p) delete CACHE[k]; }); }
+  /* Lecturas: se reutilizan 45 s (y se comparten si hay una en curso). Cualquier escritura vacía la caché. */
+  const api = (a, d = {}) => {
+    if (!LECT[a]) return LC.api.call(a, d).finally(limpiar);
+    const k = a + JSON.stringify(d), h = CACHE[k];
+    if (h && Date.now() - h.t < TTL) return h.p;
+    const p = LC.api.call(a, d); poner(k, p); return p;
+  };
   const okMsg = m => toast(m, 'success'), fail = e => toast(e.message || 'Error', 'error');
   LC.config.ready = ['articulos', 'proveedores'];
+  LC.expectedBackend = '2C-2'; // versión de Code.gs que necesita esta interfaz
   let CAT = null;
-  const catalogo = async force => (CAT && !force) ? CAT : (CAT = await api('catalogo'));
+  const catalogo = async () => (CAT = await api('catalogo'));
   const opts = (arr, v, l, s) => arr.map(x => `<option value="${esc(x[v])}"${x[v] === s ? ' selected' : ''}>${esc(x[l])}</option>`).join('');
   const sel = (id, label, html, ph = 'Todas') => `<label class="field"><span>${esc(label)}</span><select id="${id}"><option value="">${esc(ph)}</option>${html}</select></label>`;
   const fld = (id, label, o = {}) => `<label class="field"><span>${esc(label)}${o.req ? ' *' : ''}</span><input id="${id}" type="${o.type || 'text'}" value="${esc(o.value ?? '')}"${o.list ? ` list="${o.list}"` : ''}${o.max ? ` maxlength="${o.max}"` : ''}${o.step ? ` step="${o.step}" min="0"` : ''}${o.dis ? ' disabled' : ''}></label>`;
@@ -20,11 +30,12 @@
     try { const r = await api(accion, datos); CAT = null; m.close(); okMsg(r.duplicado ? 'Esa operación ya estaba registrada: no se duplicó.' : 'Guardado correctamente.'); done(); }
     catch (e) { if (!(onErr && onErr(e))) fail(e); btn.disabled = false; }
   }
-  function validarArticulo(d, nuevo, teniaProv) {
+  function validarArticulo(d, nuevo, teniaProv, teniaPrecio) {
     if (nuevo && !String(d.categoria || '').trim()) return 'La categoría es obligatoria.';
     if (nuevo && !String(d.subcategoria || '').trim()) return 'La subcategoría es obligatoria.';
     if (!String(d.talle || '').trim()) return 'El talle es obligatorio.';
     if ((nuevo || teniaProv) && !d.proveedor_id) return 'Seleccioná un proveedor: es obligatorio.';
+    if ((nuevo || teniaPrecio) && !(Number(d.precio_venta) > 0)) return 'El precio de venta es obligatorio y debe ser mayor que 0.';
     if (d.precio_venta !== '' && !(Number(d.precio_venta) >= 0)) return 'El precio de venta no es válido.';
     return null;
   }
@@ -56,20 +67,20 @@
     const m = modal({ title: nuevo ? 'Nuevo artículo' : 'Editar artículo', footer: foot, body: `<div class="form-grid">
       ${nuevo ? fld('a-cat', 'Categoría', { req: 1, list: 'dl-cat', max: 60 }) + fld('a-sub', 'Subcategoría', { req: 1, list: 'dl-sub', max: 60 }) : fld('a-cat', 'Categoría', { value: a.categoria, dis: 1 }) + fld('a-sub', 'Subcategoría', { value: a.subcategoria, dis: 1 })}
       ${fld('a-det', 'Detalle (opcional)', { value: a && a.detalle, max: 80 })}${fld('a-talle', 'Talle', { req: 1, value: a && a.talle, max: 10 })}
-      ${sel('a-prov', 'Proveedor *', opts(c.proveedores, 'id', 'razon_social', a && a.proveedor_id) + (a && a.proveedor_id && !c.proveedores.some(p => p.id === a.proveedor_id) ? `<option value="${esc(a.proveedor_id)}" selected>${esc(a.proveedor)} (inactivo)</option>` : ''), 'Seleccionar…')}${fld('a-pv', 'Precio de venta (ARS)', { type: 'number', step: '0.01', value: a ? a.precio_venta : '' })}</div>
+      ${sel('a-prov', 'Proveedor *', opts(c.proveedores, 'id', 'razon_social', a && a.proveedor_id) + (a && a.proveedor_id && !c.proveedores.some(p => p.id === a.proveedor_id) ? `<option value="${esc(a.proveedor_id)}" selected>${esc(a.proveedor)} (inactivo)</option>` : ''), 'Seleccionar…')}${fld('a-pv', 'Precio de venta (ARS)', { req: 1, type: 'number', step: '0.01', value: a ? a.precio_venta : '' })}</div>
       <datalist id="dl-cat">${c.categorias.map(x => `<option value="${esc(x.nombre)}">`).join('')}</datalist><datalist id="dl-sub">${c.subcategorias.map(x => `<option value="${esc(x.nombre)}">`).join('')}</datalist>
       <div class="note">${nuevo ? 'Si la categoría o subcategoría no existe, se crea. El stock inicial es 0: se carga con una recepción de mercadería.' : 'Categoría y subcategoría no se pueden cambiar. Los precios históricos de compras y ventas no se modifican.'}</div>` });
     m.el.querySelector('#sv').onclick = e => {
       const d = { id: a && a.id, categoria: v(m.el, 'a-cat'), subcategoria: v(m.el, 'a-sub'), detalle: v(m.el, 'a-det'), talle: v(m.el, 'a-talle'), proveedor_id: v(m.el, 'a-prov'), precio_venta: v(m.el, 'a-pv') };
-      const msg = validarArticulo(d, nuevo, !!(a && a.proveedor_id)); if (msg) return fail({ message: msg });
+      const msg = validarArticulo(d, nuevo, !!(a && a.proveedor_id), !!(a && a.precio_venta > 0)); if (msg) return fail({ message: msg });
       enviar(e.target, 'articulo_guardar', d, m, done);
     };
   }
   LC.views.articulos = async function (root) {
-    let c; try { c = await catalogo(true); } catch (e) { root.innerHTML = `<div class="empty">${esc(e.message)}</div>`; return; }
+    let c; try { c = await catalogo(); } catch (e) { root.innerHTML = `<div class="empty">${esc(e.message)}</div>`; return; }
     const subs = cid => opts(c.subcategorias.filter(s => !cid || s.categoria_id === cid), 'id', 'nombre');
     root.innerHTML = `<div class="filters">${sel('f-cat', 'Categoría', opts(c.categorias, 'id', 'nombre'))}${sel('f-sub', 'Subcategoría', subs(''))}${sel('f-sup', 'Proveedor', opts(c.proveedores, 'id', 'razon_social'))}
-      <div class="actions"><button class="btn primary" id="newArt">${icon('plus', 18)}Nuevo artículo</button><button class="btn ghost" id="newRec">Cargar mercadería</button></div></div><div id="out">${loading()}</div>`;
+      <div class="actions"><button class="btn primary" id="newArt">${icon('plus', 18)}Nuevo artículo</button><button class="btn ghost" id="newRec">Cargar mercadería</button><button class="btn ghost" id="manCat">Categorías</button></div></div><div id="out">${loading()}</div>`;
     let rows = [];
     const load = async () => {
       try {
@@ -82,8 +93,9 @@
     };
     root.querySelector('#f-cat').onchange = () => { root.querySelector('#f-sub').innerHTML = '<option value="">Todas</option>' + subs(v(root, 'f-cat')); load(); };
     root.querySelector('#f-sub').onchange = root.querySelector('#f-sup').onchange = load;
-    root.querySelector('#newArt').onclick = () => artForm(null, async () => { await catalogo(true); load(); });
+    root.querySelector('#newArt').onclick = () => artForm(null, async () => { await catalogo(); load(); });
     root.querySelector('#newRec').onclick = () => recForm(load);
+    root.querySelector('#manCat').onclick = () => catModal(() => LC.views.articulos(root));
     root.addEventListener('click', e => {
       const ed = e.target.closest('[data-edit]'), off = e.target.closest('[data-off]');
       if (ed) artForm(rows.find(a => a.id === ed.dataset.edit), load);
@@ -107,7 +119,7 @@
     };
   }
   LC.views.proveedores = async function (root) {
-    let c; try { c = await catalogo(true); } catch (e) { root.innerHTML = `<div class="empty">${esc(e.message)}</div>`; return; }
+    let c; try { c = await catalogo(); } catch (e) { root.innerHTML = `<div class="empty">${esc(e.message)}</div>`; return; }
     root.innerHTML = `<div class="filters">${fld('f-from', 'Desde', { type: 'date', value: daysAgo(89) })}${fld('f-to', 'Hasta', { type: 'date', value: today() })}${sel('f-sup', 'Proveedor', opts(c.proveedores, 'id', 'razon_social'))}${sel('f-cat', 'Categoría de producto', opts(c.categorias, 'nombre', 'nombre'))}<label class="field"><span>Mostrar</span><select id="f-est"><option value="activos">Activos</option><option value="inactivos">Inactivos</option></select></label>
       <div class="actions"><button class="btn primary" id="newSup">${icon('plus', 18)}Nuevo proveedor</button></div></div><div id="out">${loading()}</div>`;
     let all = [];
@@ -119,7 +131,7 @@
       } catch (e) { $('#out', root).innerHTML = `<div class="empty">${esc(e.message)}</div>`; }
     };
     root.querySelectorAll('.filters select, .filters input').forEach(i => i.addEventListener('change', load));
-    root.querySelector('#newSup').onclick = () => supForm(null, async () => { await catalogo(true); load(); });
+    root.querySelector('#newSup').onclick = () => supForm(null, async () => { await catalogo(); load(); });
     root.addEventListener('click', e => {
       const ed = e.target.closest('[data-edit]'), off = e.target.closest('[data-off]');
       const re = e.target.closest('[data-react]');
@@ -133,7 +145,7 @@
   /* ---------- Recepción de mercadería (2C) ---------- */
   const lbl = a => `${a.categoria} ${a.subcategoria}${a.detalle ? ' ' + a.detalle : ''} · T${a.talle}`;
   async function recForm(done) {
-    let arts; try { arts = (await api('articulo_listar', {})).articulos; await catalogo(true); } catch (e) { return fail(e); }
+    let arts; try { arts = (await api('articulo_listar', {})).articulos; await catalogo(); } catch (e) { return fail(e); }
     const c = CAT, rid = crypto.randomUUID();
     const linea = () => `<tr class="ln"><td><select class="l-art"><option value="">Seleccionar…</option>${arts.map(a => `<option value="${esc(a.id)}">${esc(lbl(a))}</option>`).join('')}</select></td><td><input class="l-qty" type="number" min="1" step="1" inputmode="numeric"></td><td><input class="l-cost" type="number" min="0" step="0.01" inputmode="decimal"></td><td class="num l-imp">—</td><td><button class="btn ghost sm l-del" type="button">Quitar</button></td></tr>`;
     const m = modal({ title: 'Recepción de mercadería', footer: foot, body: `<div class="form-grid">${fld('r-date', 'Fecha', { type: 'date', value: today(), req: 1 })}${sel('r-prov', 'Proveedor *', opts(c.proveedores, 'id', 'razon_social'), 'Seleccionar…')}</div>
@@ -152,41 +164,29 @@
       enviar(e.target, 'compra_registrar', datos, m, done);
     };
   }
-  async function recDetalle(id) {
-    try {
-      const r = await api('compra_detalle', { id }), c = r.compra;
-      modal({ title: `Recepción ${c.id}`, footer: '<button class="btn ghost" data-close>Cerrar</button>', body: `<dl><dt>Fecha</dt><dd>${esc(c.fecha)}</dd><dt>Proveedor</dt><dd>${esc(c.proveedor)}</dd><dt>Estado</dt><dd>${esc(c.estado)}</dd><dt>Registró</dt><dd>${esc(c.usuario)}</dd><dt>Movimientos de stock</dt><dd>${r.movimientos}</dd></dl>`
-        + tbl([{ k: 'articulo', l: 'Artículo' }, { k: 'cantidad', l: 'Cantidad', num: 1 }, { k: 'cu', l: 'Costo unit.', num: 1 }, { k: 'imp', l: 'Importe', num: 1 }], r.lineas.map(l => ({ ...l, cu: fmtARS(l.costo_unitario), imp: fmtARS(l.importe) }))) + `<p class="note">Total: <b>${fmtARS(c.total)}</b></p>` });
-    } catch (e) { fail(e); }
-  }
-  async function recView(root) {
-    let c; try { c = await catalogo(true); } catch (e) { root.innerHTML = `<div class="empty">${esc(e.message)}</div>`; return; }
-    root.innerHTML = `<div class="filters">${fld('f-from', 'Desde', { type: 'date', value: daysAgo(29) })}${fld('f-to', 'Hasta', { type: 'date', value: today() })}${sel('f-sup', 'Proveedor', opts(c.proveedores, 'id', 'razon_social'))}<div class="actions"><button class="btn primary" id="newRec2">${icon('plus', 18)}Nueva recepción</button></div></div><div id="out">${loading()}</div>`;
-    const load = async () => {
-      try {
-        const rows = (await api('compra_listar', { desde: v(root, 'f-from'), hasta: v(root, 'f-to'), proveedor_id: v(root, 'f-sup') })).compras;
-        $('#out', root).innerHTML = `<div class="kpis one">${kpi('Recepciones confirmadas', fmtNum(rows.filter(r => r.estado === 'CONFIRMADA').length), 'En el período')}</div><div class="card flush">${tbl([{ k: 'fecha', l: 'Fecha' }, { k: 'id', l: 'N°' }, { k: 'proveedor', l: 'Proveedor' }, { k: 'unidades', l: 'Unidades', num: 1 }, { k: 'tot', l: 'Total', num: 1 }, { k: 'est', l: 'Estado', html: 1 }, { k: 'acc', l: '', html: 1 }],
-          rows.map(r => ({ ...r, tot: fmtARS(r.total), est: r.estado === 'CONFIRMADA' ? 'Confirmada' : `<span class="badge">${r.estado === 'PENDIENTE' ? 'Incompleta' : 'Descartada'}</span>`, acc: `<button class="btn ghost sm" data-ver="${esc(r.id)}">Ver detalle</button>` + (r.estado === 'PENDIENTE' ? ` <button class="btn ghost sm" data-recup="${esc(r.id)}">Recuperar</button>` : '') })))}</div>`;
-      } catch (e) { $('#out', root).innerHTML = `<div class="empty">${esc(e.message)}</div>`; }
-    };
-    root.querySelectorAll('.filters select, .filters input').forEach(i => i.addEventListener('change', load));
-    root.querySelector('#newRec2').onclick = () => recForm(load);
-    root.addEventListener('click', e => {
-      const ver = e.target.closest('[data-ver]'), rc = e.target.closest('[data-recup]');
-      if (ver) recDetalle(ver.dataset.ver);
-      if (rc) confirmar('Esta recepción quedó incompleta. Se completará con lo ya registrado (o se descartará si no tiene detalle). ¿Continuar?', 'Recuperar', async () => { await api('compra_recuperar', { compra_id: rc.dataset.recup }); load(); });
+  /* ---------- Categorías: renombrar / eliminar ---------- */
+  function catModal(refresh) {
+    const m = modal({ title: 'Categorías y subcategorías', footer: '<button class="btn ghost" data-close>Cerrar</button>', body: '<div id="cat-tree"></div>' });
+    const box = m.el.querySelector('#cat-tree');
+    const fila = (x, tipo) => `<div class="cat-row" data-id="${esc(x.id)}" data-tipo="${tipo}" data-name="${esc(x.nombre)}" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;padding:6px 0;${tipo === 'subcategoria' ? 'margin-left:22px;' : 'font-weight:600;'}"><span style="flex:1;min-width:120px">${esc(x.nombre)}</span><button class="btn ghost sm" data-act="ren">Renombrar</button><button class="btn ghost sm" data-act="del">Eliminar</button></div>`;
+    const draw = async () => { try { const c = await catalogo(); box.innerHTML = c.categorias.map(k => fila(k, 'categoria') + c.subcategorias.filter(s => s.categoria_id === k.id).map(s => fila(s, 'subcategoria')).join('')).join('') || '<div class="empty">Todavía no hay categorías.</div>'; } catch (e) { box.textContent = e.message; } };
+    const aplicar = async (accion, datos, msg) => { try { const r = await api(accion, datos); okMsg(typeof msg === 'function' ? msg(r) : msg); await draw(); refresh(); } catch (e) { fail(e); } };
+    box.addEventListener('click', e => {
+      const b = e.target.closest('[data-act]'); if (!b) return;
+      const f = b.closest('.cat-row'), id = f.dataset.id, tipo = f.dataset.tipo, name = f.dataset.name, a = b.dataset.act;
+      if (a === 'ren') f.innerHTML = `<input class="c-new" value="${esc(name)}" maxlength="60" style="flex:1;min-width:120px"><button class="btn primary sm" data-act="ren-ok">Guardar</button><button class="btn ghost sm" data-act="cancel">Cancelar</button>`;
+      if (a === 'ren-ok') aplicar(tipo + '_renombrar', { id, nombre: f.querySelector('.c-new').value }, 'Nombre actualizado.');
+      if (a === 'del') f.innerHTML = `<span style="flex:1;min-width:120px">¿Eliminar "${esc(name)}"? Si está en uso se oculta en lugar de borrarse.</span><button class="btn primary sm" data-act="del-ok">Sí, eliminar</button><button class="btn ghost sm" data-act="cancel">No</button>`;
+      if (a === 'del-ok') aplicar(tipo + '_eliminar', { id }, r => r.eliminada ? 'Eliminada.' : 'Estaba en uso: se ocultó (los artículos existentes la conservan).');
+      if (a === 'cancel') draw();
     });
-    load();
+    draw();
   }
-  const artView = LC.views.articulos;
-  LC.views.articulos = async function (root) {
-    root.innerHTML = '<div class="actions"><button class="btn primary" data-tab="art">Artículos</button><button class="btn ghost" data-tab="rec">Recepciones</button></div><div id="tabbody"></div>';
-    const show = async t => {
-      root.querySelectorAll('[data-tab]').forEach(b => { b.className = 'btn ' + (b.dataset.tab === t ? 'primary' : 'ghost'); });
-      const b = document.createElement('div'); root.querySelector('#tabbody').replaceChildren(b); await (t === 'art' ? artView : recView)(b);
-    };
-    root.querySelector('.actions').addEventListener('click', e => { const t = e.target.closest('[data-tab]'); if (t) show(t.dataset.tab); });
-    show('art');
-  };
-  LC.real = { validarArticulo, validarRecepcion };
+  /* Precarga (1 sola solicitud) tras iniciar sesión: la primera navegación ya encuentra los datos. */
+  function prefetch() {
+    const ds = [['catalogo', {}], ['articulo_listar', { categoria_id: '', subcategoria_id: '', proveedor_id: '' }], ['proveedor_listar', { desde: daysAgo(89), hasta: today(), estado: 'activos' }]];
+    const L = LC.api.call('lote', { acciones: ds.map(x => ({ accion: x[0], datos: x[1] })) });
+    ds.forEach((x, k) => poner(x[0] + JSON.stringify(x[1]), L.then(r => r.resultados[k])));
+  }
+  LC.real = { validarArticulo, validarRecepcion, prefetch };
 })();
