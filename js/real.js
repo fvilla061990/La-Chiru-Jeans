@@ -188,5 +188,5 @@
     const L = LC.api.call('lote', { acciones: ds.map(x => ({ accion: x[0], datos: x[1] })) });
     ds.forEach((x, k) => poner(x[0] + JSON.stringify(x[1]), L.then(r => r.resultados[k])));
   }
-  LC.real = { validarArticulo, validarRecepcion, prefetch };
+  LC.real = { validarArticulo, validarRecepcion, prefetch, kit: { api, opts, sel, fld, v, tbl, confirmar, okMsg, fail, foot, enviar, LECT } };
 })();
