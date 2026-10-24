@@ -7,7 +7,7 @@ LC.config = {
   timeZone: 'America/Argentina/Buenos_Aires',
   vatRate: 0.21,
   // Fase 2: URL del Web App de Apps Script. Mientras sea null se usa el repositorio de demostración.
-  apiUrl: 'https://script.google.com/macros/s/AKfycbypc-_yi3j0k5fCYpkLuv_8rTleJvar8op29vFqDl7KCUR1SaXD_5MSq7nQx6gLTO56/exec',
+  apiUrl: 'https://script.google.com/macros/s/AKfycbycopp1Jfgcmud7IUtZ6gN704ysCIvuWVNa5P-3UAIjiFNID6d1-i_kWRUI-0yreUta/exec',
   googleClientId: '816185285519-llucvef7pr07uu5dqk79in6g7sqb6m6r.apps.googleusercontent.com',   // ID de cliente OAuth de Google (público, no es secreto)
   ready: [],              // módulos ya conectados a la base real (se completa en cada entrega)
   modules: [
